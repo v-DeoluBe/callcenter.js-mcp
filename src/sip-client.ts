@@ -13,11 +13,13 @@ class MediaHandler {
   private remoteIp: string = "";
   private sipClient: SIPClient | null = null;
   private selectedPayloadType: number = 0; // Default to PCMU fallback
+  private session: any;
 
   constructor(session: any, sipClient?: SIPClient) {
     // Get local IP address
     this.localIp = this.getLocalIpAddress();
     this.sipClient = sipClient || null;
+    this.session = session;
     // Start with port 0, will be set when AudioBridge starts
     this.localRtpPort = 0;
   }
@@ -161,7 +163,7 @@ m=audio ${this.localRtpPort} RTP/AVP ${payloadTypeString}`;
     logger.codec.info(`Codec negotiated: ${selectedCodec}`);
 
     if (this.sipClient && this.remoteRtpPort > 0) {
-      this.sipClient.setRemoteRtpInfo(this.remoteIp, this.remoteRtpPort);
+      this.sipClient.setRemoteRtpInfo(this.remoteIp, this.remoteRtpPort, this.session);
     }
   }
   
@@ -185,6 +187,14 @@ m=audio ${this.localRtpPort} RTP/AVP ${payloadTypeString}`;
   getSelectedPayloadType(): number {
     return this.selectedPayloadType;
   }
+
+  getRemoteRtpIp(): string {
+    return this.remoteIp;
+  }
+
+  getRemoteRtpPort(): number {
+    return this.remoteRtpPort;
+  }
 }
 
 export class SIPClient {
@@ -197,6 +207,8 @@ export class SIPClient {
   private keepAliveTimer: NodeJS.Timeout | null = null;
   private connectionState: 'disconnected' | 'connecting' | 'connected' | 'registered' = 'disconnected';
   private isLocalHangup: boolean = false;
+  private inboundEnabled: boolean = false;
+  private autoAnswerInbound: boolean = true;
 
   constructor(config: SIPAdvancedConfig, eventCallback: (event: CallEvent) => void) {
     this.config = config;
@@ -398,6 +410,23 @@ export class SIPClient {
     return config;
   }
 
+  /**
+   * Enable handling of inbound (caller-originated) INVITE requests.
+   * Can be called before or after connect(); takes effect as soon as the
+   * SIP user agent is registered and receiving traffic.
+   */
+  enableInboundCalls(autoAnswer: boolean = true): void {
+    this.inboundEnabled = true;
+    this.autoAnswerInbound = autoAnswer;
+    getLogger().sip.info(
+      `Inbound call handling enabled (autoAnswer: ${autoAnswer})`
+    );
+  }
+
+  disableInboundCalls(): void {
+    this.inboundEnabled = false;
+  }
+
   private setupEventHandlers(): void {
     // Enhanced event handlers with state tracking
     this.userAgent.on("connected", () => {
@@ -458,6 +487,101 @@ export class SIPClient {
         data: { attempt, maxAttempts }
       });
     });
+
+    // Inbound calls: fired whenever a remote party sends an INVITE to us
+    this.userAgent.on("invite", (session: any) => {
+      this.handleIncomingInvite(session);
+    });
+  }
+
+  private handleIncomingInvite(session: any): void {
+    const remoteIdentity =
+      session.remoteIdentity?.uri?.toString() ||
+      session.request?.from?.uri?.toString() ||
+      "unknown";
+
+    getLogger().sip.info(`Incoming call from: ${remoteIdentity}`);
+
+    if (!this.inboundEnabled) {
+      getLogger().sip.info("Inbound calls disabled - rejecting incoming call");
+      try {
+        session.reject({ statusCode: 486 }); // Busy Here
+      } catch (error) {
+        getLogger().sip.error("Error rejecting incoming call:", error);
+      }
+      return;
+    }
+
+    if (this.currentSession) {
+      getLogger().sip.info("Already on a call - rejecting incoming call");
+      try {
+        session.reject({ statusCode: 486 }); // Busy Here
+      } catch (error) {
+        getLogger().sip.error("Error rejecting incoming call:", error);
+      }
+      return;
+    }
+
+    if (this.presetRtpPort > 0) {
+      this.mediaHandler?.setRtpPort(this.presetRtpPort);
+    }
+
+    this.currentSession = session;
+    this.attachSessionHandlers(session);
+
+    this.eventCallback({
+      type: "INCOMING_CALL",
+      data: { from: remoteIdentity },
+    });
+
+    if (this.autoAnswerInbound) {
+      this.answerIncomingCall().catch((error) => {
+        getLogger().sip.error("Failed to auto-answer incoming call:", error);
+      });
+    }
+  }
+
+  /**
+   * Accept a pending incoming call. Used automatically when auto-answer is
+   * enabled, or can be called manually after receiving an INCOMING_CALL event.
+   */
+  async answerIncomingCall(): Promise<void> {
+    if (!this.currentSession) {
+      throw new Error("No incoming call to answer");
+    }
+
+    try {
+      getLogger().sip.info("Answering incoming call...");
+      this.currentSession.accept({
+        extraHeaders: [`Contact: <sip:${this.config.username}@${this.config.serverIp}>`],
+      });
+      // Inbound (UAS) sessions don't emit an "accepted" event the way outbound
+      // (UAC) sessions do once the remote party ACKs - emit it ourselves so
+      // downstream call setup (audio bridge, OpenAI connection) proceeds
+      // identically for both call directions.
+      this.emitCallAnswered();
+    } catch (error) {
+      getLogger().sip.error("Failed to answer incoming call:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Reject a pending incoming call before it has been answered.
+   */
+  async rejectIncomingCall(statusCode: number = 486): Promise<void> {
+    if (!this.currentSession) {
+      return;
+    }
+
+    try {
+      this.currentSession.reject({ statusCode });
+    } catch (error) {
+      getLogger().sip.error("Failed to reject incoming call:", error);
+      throw error;
+    } finally {
+      this.currentSession = null;
+    }
   }
 
   private handleRegistrationError(response: any): void {
@@ -627,7 +751,9 @@ export class SIPClient {
       getLogger().sip.info(`Making call to: ${targetUri}`);
       this.currentSession = this.userAgent.invite(targetUri);
 
-      // Set up session event handlers
+      // Set up session event handlers (shared with inbound sessions)
+      this.attachSessionHandlers(this.currentSession, callConfig.targetNumber);
+
       let progressLogged = false;
       this.currentSession.on("progress", () => {
         if (!progressLogged) {
@@ -640,57 +766,75 @@ export class SIPClient {
         });
       });
 
-      this.currentSession.on("accepted", () => {
-        getLogger().sip.info("Call accepted");
-        const rtpPort = this.mediaHandler?.getRtpPort() || 5000;
-        
-        this.eventCallback({
-          type: "CALL_ANSWERED",
-          data: {
-            session: this.currentSession,
-            rtpPort: rtpPort,
-            mediaHandler: this.mediaHandler,
-            negotiatedPayloadType: this.mediaHandler?.getSelectedPayloadType() || 0,
-          },
-        });
-      });
-
-      this.currentSession.on("terminated", (message: any) => {
-        getLogger().sip.info("SIP session terminated");
-        const endedBy = this.isLocalHangup ? 'local' : 'remote';
-        this.isLocalHangup = false; // Reset flag
-        this.handleCallEnd(endedBy);
-      });
-
-      this.currentSession.on("failed", (response: any) => {
-        getLogger().sip.error("Call failed:", response);
-        this.handleCallEnd();
-      });
-
-      // Add additional event handlers for better call termination detection
-      this.currentSession.on("bye", (request: any) => {
-        // Only log if it's actually from remote (not triggered by our own terminate())
-        if (!this.isLocalHangup) {
-          getLogger().sip.info("BYE message received from remote party");
-        }
-        // Don't call handleCallEnd here - let 'terminated' handle it
-      });
-
-      this.currentSession.on("cancel", () => {
-        getLogger().sip.info("CANCEL received - call cancelled");
-        this.handleCallEnd('remote');
-      });
-
-      this.currentSession.on("rejected", (response: any) => {
-        getLogger().sip.info("Call rejected:", response);
-        this.handleCallEnd('remote');
-      });
-
       return this.currentSession.id || "call-" + Date.now();
     } catch (error) {
       getLogger().sip.error("Failed to make call:", error);
       throw error;
     }
+  }
+
+  /**
+   * Wire up the common session lifecycle events shared by both outbound
+   * (UAC, via makeCall) and inbound (UAS, via handleIncomingInvite) sessions.
+   * The underlying "accepted" event (fired for outbound calls once the
+   * remote party answers with a 2xx response) and inbound-specific
+   * confirmation happen at different points in the SIP handshake, so
+   * inbound sessions additionally get an explicit CALL_ANSWERED emission
+   * once we've accepted the call (see answerIncomingCall()).
+   */
+  private attachSessionHandlers(session: any, targetNumber?: string): void {
+    session.on("accepted", () => {
+      getLogger().sip.info("Call accepted");
+      this.emitCallAnswered();
+    });
+
+    session.on("terminated", () => {
+      getLogger().sip.info("SIP session terminated");
+      const endedBy = this.isLocalHangup ? 'local' : 'remote';
+      this.isLocalHangup = false; // Reset flag
+      this.handleCallEnd(endedBy);
+    });
+
+    session.on("failed", (response: any) => {
+      getLogger().sip.error("Call failed:", response);
+      this.handleCallEnd();
+    });
+
+    // Add additional event handlers for better call termination detection
+    session.on("bye", () => {
+      // Only log if it's actually from remote (not triggered by our own terminate())
+      if (!this.isLocalHangup) {
+        getLogger().sip.info("BYE message received from remote party");
+      }
+      // Don't call handleCallEnd here - let 'terminated' handle it
+    });
+
+    session.on("cancel", () => {
+      getLogger().sip.info("CANCEL received - call cancelled");
+      this.handleCallEnd('remote');
+    });
+
+    session.on("rejected", (response: any) => {
+      getLogger().sip.info("Call rejected:", response);
+      this.handleCallEnd('remote');
+    });
+  }
+
+  private emitCallAnswered(): void {
+    const rtpPort = this.mediaHandler?.getRtpPort() || 5000;
+    const remoteRtpIp = this.mediaHandler?.getRemoteRtpIp();
+    const remoteRtpPort = this.mediaHandler?.getRemoteRtpPort();
+
+    this.eventCallback({
+      type: "CALL_ANSWERED",
+      data: {
+        session: this.currentSession,
+        rtpPort: rtpPort,
+        mediaHandler: this.mediaHandler,
+        ...(remoteRtpIp && remoteRtpPort ? { remoteRtpIp, remoteRtpPort } : {}),
+        negotiatedPayloadType: this.mediaHandler?.getSelectedPayloadType() || 0,
+      },
+    });
   }
 
   private handleCallEnd(endedBy: 'remote' | 'local' = 'remote'): void {
@@ -739,7 +883,19 @@ export class SIPClient {
     getLogger().rtp.debug(`SIP client local RTP port preset to: ${port}`);
   }
 
-  setRemoteRtpInfo(ip: string, port: number): void {
+  setRemoteRtpInfo(ip: string, port: number, session?: any): void {
+    // Guard against SDP updates from sessions that are not (yet, or no
+    // longer) the active session - e.g. an incoming call still awaiting an
+    // accept/reject decision, or a call that was rejected as busy. Without
+    // this check, a not-yet-accepted inbound INVITE could otherwise
+    // overwrite the RTP endpoint of an already active call.
+    if (session && session !== this.currentSession) {
+      getLogger().rtp.debug(
+        `Ignoring remote RTP info from non-active session: ${ip}:${port}`
+      );
+      return;
+    }
+
     getLogger().rtp.debug(`Setting remote RTP info: ${ip}:${port}`);
     this.eventCallback({
       type: "CALL_ANSWERED",
