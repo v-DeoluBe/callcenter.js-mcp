@@ -438,6 +438,24 @@ npm start listen --config config.json
 
 Each topic can be answered either from the static `knowledge` text (grounded, no external dependency) or by delegating to `mcpEndpoint` (a lightweight HTTP JSON contract: the agent `POST`s `{ "question": "..." }` and expects `{ "answer": "..." }` back) - useful for wiring in a real MCP server or other backend that owns the authoritative answer. If no topic confidently matches the caller's question (see `confidenceThreshold`), the caller hears `noMatchMessage` instead.
 
+#### Connecting a real VoIP provider so people can call a real phone number
+
+Everything above also works with a **real VoIP/DID (phone number) provider** over the public internet (e.g. Telnyx, Twilio Elastic SIP Trunking, VoIP.ms, Flowroute) - not just a LAN PBX like Fritz!Box. Since this box will typically be behind your home/office router (NAT), a couple of extra steps are required so the provider's media servers can actually reach it:
+
+1. **Get a SIP trunk + phone number** from a VoIP provider and note the SIP credentials (username/password), SIP server/domain, and the number they assign you.
+2. **Port-forward SIP + RTP** on your router to the machine running this agent:
+   - UDP `localPort` (SIP signaling, default `5060`)
+   - The RTP port range used for media (see the provider's/`AudioBridge` port usage; forward a reasonably wide UDP range, e.g. `10000-20000`, to be safe)
+3. **Set `externalIp`** in your `sip` config (or `SIP_EXTERNAL_IP` env var) to your public IP address (or a DDNS hostname if your IP changes). Without this, the SDP the agent advertises will contain your private LAN IP, and the provider won't know where to send audio back to.
+4. **Point the provider's inbound routing** (their portal usually calls this "SIP URI"/"origination"/"termination" or a webhook) at your public IP/hostname and `localPort`.
+5. Configure `inbound.enabled: true` with your topics (see `config.voip-provider.example.json` for a full template), then run:
+   ```bash
+   npm start listen --config config.json
+   ```
+6. Call your new phone number from any regular phone - the agent should answer, greet you, and route your question to the matching topic.
+
+**⚠️ Status**: inbound call handling has been built to mirror the outbound path (same SIP/RTP/codec stack) but, like the rest of this "vibe-coded" project, has only been verified against Fritz!Box so far. Real commercial VoIP trunk providers are expected to work but haven't been exhaustively tested - if audio doesn't flow both ways, double-check `externalIp` and your router's port forwarding first.
+
 ### 4. Programmatic API
 
 ```typescript

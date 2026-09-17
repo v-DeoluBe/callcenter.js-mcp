@@ -136,6 +136,17 @@ export class ConfigurationValidator {
             });
             compatibilityScore -= 30;
         }
+        // Check for public/external IP when connecting to a provider over the
+        // public internet from behind a NAT/router (anything other than the
+        // Fritz!Box LAN scenario). Without it, the advertised SDP will contain
+        // a private LAN IP that the provider's media servers cannot route to.
+        if (config.provider !== 'fritz-box' && !config.externalIp) {
+            report.warnings.push({
+                type: 'missing-external-ip',
+                message: `No "externalIp" configured - if this box is behind a NAT/router, the provider's media servers may not be able to reach it for RTP audio`,
+                suggestion: 'Set "externalIp" to your public IP/hostname (or SIP_EXTERNAL_IP env var), and forward your SIP/RTP ports on the router'
+            });
+        }
         // Check session timer requirements
         if (profile.requirements.sessionTimers && !config.sessionTimers?.enabled) {
             report.warnings.push({

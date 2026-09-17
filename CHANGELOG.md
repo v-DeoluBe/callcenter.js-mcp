@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] - 2025-08-31
 
 ### Added
+- **`externalIp` / `SIP_EXTERNAL_IP` Config Option**: Advertise a public IP/hostname in outgoing SDP instead of the local LAN IP, enabling the agent to work with real internet-facing VoIP/DID providers (Telnyx, Twilio Elastic SIP Trunking, VoIP.ms, etc.) from behind a NAT/router. Includes a validation warning when connecting to a non-Fritz!Box provider without it set, and a new `config.voip-provider.example.json` template plus README setup guide.
 - **Inbound Call Handling & Topic Routing**: The agent can now receive calls (not just place them). New `inbound` config section (`enabled`, `autoAnswer`, `greeting`, `noMatchMessage`, `confidenceThreshold`, `topics`) configures a registry of "events/topics" the agent can answer questions about. Incoming SIP INVITEs are auto-answered, the caller is greeted, their spoken question is classified against the configured topics (`CallRouter`), and an answer is spoken back either from static `knowledge` text or by querying an external `mcpEndpoint` HTTP service.
 - New `listen` CLI command (`npm start listen --config config.json`) starts the agent in inbound-listening mode.
 - New `CallRouter` class (`src/call-router.ts`) exported from the package for programmatic use.

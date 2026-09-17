@@ -299,6 +299,7 @@ function loadEnvironmentOverrides(): Partial<SIPAdvancedConfig> {
   if (process.env.SIP_SERVER_IP) overrides.serverIp = process.env.SIP_SERVER_IP;
   if (process.env.SIP_SERVER_PORT) overrides.serverPort = parseInt(process.env.SIP_SERVER_PORT);
   if (process.env.SIP_LOCAL_PORT) overrides.localPort = parseInt(process.env.SIP_LOCAL_PORT);
+  if (process.env.SIP_EXTERNAL_IP) overrides.externalIp = process.env.SIP_EXTERNAL_IP;
   
   // Provider and advanced settings
   if (process.env.SIP_PROVIDER) overrides.provider = process.env.SIP_PROVIDER;
@@ -454,7 +455,8 @@ export function loadConfigFromEnv(): Partial<Config> {
       password: process.env.SIP_PASSWORD || '',
       serverIp: process.env.SIP_SERVER_IP || '',
       serverPort: parseInt(process.env.SIP_SERVER_PORT || '5060'),
-      localPort: parseInt(process.env.SIP_LOCAL_PORT || '5060')
+      localPort: parseInt(process.env.SIP_LOCAL_PORT || '5060'),
+      externalIp: process.env.SIP_EXTERNAL_IP || undefined
     },
     ai: {
       openaiApiKey: process.env.OPENAI_API_KEY || '',

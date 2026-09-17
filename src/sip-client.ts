@@ -52,16 +52,23 @@ class MediaHandler {
   getDescription(onSuccess: any, onFailure: any, mediaHint: any) {
     // Generate proper SDP with real RTP port and local IP
     const sessionId = Date.now();
-    
+
+    // For providers reachable over the public internet (e.g. a real VoIP
+    // trunk/DID provider), the box is typically behind a NAT/router and its
+    // LAN IP is not routable. If the user has configured an `externalIp`
+    // (their public IP or a DNS name), advertise that instead so the
+    // provider's media server sends RTP to the right place.
+    const advertisedIp = this.sipClient?.getExternalIp() || this.localIp;
+
     // Build codec offer based on what's available
     const supportedPayloadTypes = getSupportedPayloadTypes();
     const payloadTypeString = supportedPayloadTypes.concat([101]).join(' ');
     
     // Build SDP with dynamic codec list
     let sdp = `v=0
-o=- ${sessionId} ${sessionId} IN IP4 ${this.localIp}
+o=- ${sessionId} ${sessionId} IN IP4 ${advertisedIp}
 s=AI Voice Agent
-c=IN IP4 ${this.localIp}
+c=IN IP4 ${advertisedIp}
 t=0 0
 m=audio ${this.localRtpPort} RTP/AVP ${payloadTypeString}`;
 
@@ -234,6 +241,16 @@ export class SIPClient {
       }
     }
   }
+
+  // The public/external IP (or DNS name) to advertise in outgoing SDP.
+  // Required when connecting to a real internet-facing VoIP/DID provider
+  // from behind a NAT/router, since the LAN IP is not routable by the
+  // provider's media servers. Falls back to the local IP when unset (fine
+  // for LAN-only PBXes like Fritz!Box).
+  getExternalIp(): string | undefined {
+    return this.config.externalIp;
+  }
+
 
   async connect(): Promise<void> {
     try {

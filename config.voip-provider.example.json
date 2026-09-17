@@ -1,0 +1,32 @@
+{
+  "comment": "Real internet VoIP/DID provider (e.g. Telnyx, Twilio Elastic SIP Trunking, VoIP.ms) with inbound call answering + topic routing enabled. Requires port-forwarding your SIP/RTP ports and setting externalIp to your public IP/hostname.",
+  "sip": {
+    "username": "your_sip_trunk_username",
+    "password": "your_sip_trunk_password",
+    "serverIp": "sip.yourprovider.com",
+    "serverPort": 5060,
+    "localPort": 5060,
+    "externalIp": "YOUR_PUBLIC_IP_OR_DDNS_HOSTNAME",
+    "provider": "generic"
+  },
+  "ai": {
+    "openaiApiKey": "sk-your-openai-api-key-here",
+    "voice": "alloy"
+  },
+  "inbound": {
+    "enabled": true,
+    "autoAnswer": true,
+    "greeting": "Hi! Thanks for calling. What would you like to know about?",
+    "noMatchMessage": "I'm sorry, I don't have information on that topic yet.",
+    "confidenceThreshold": 0.5,
+    "topics": [
+      {
+        "id": "example-topic",
+        "name": "Example Topic",
+        "description": "Replace this with a description of a question topic your callers might ask about",
+        "keywords": ["example", "keyword"],
+        "knowledge": "Replace this with the factual information the agent should use to answer questions on this topic."
+      }
+    ]
+  }
+}

@@ -4,6 +4,7 @@ export interface SIPConfig {
     serverIp: string;
     serverPort: number;
     localPort: number;
+    externalIp?: string;
 }
 export interface SIPAdvancedConfig extends SIPConfig {
     stunServers?: string[];

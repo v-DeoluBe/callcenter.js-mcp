@@ -13,6 +13,7 @@ export declare class SIPClient {
     private autoAnswerInbound;
     constructor(config: SIPAdvancedConfig, eventCallback: (event: CallEvent) => void);
     private validateProviderRequirements;
+    getExternalIp(): string | undefined;
     connect(): Promise<void>;
     private buildSipjsConfiguration;
     private buildNATConfiguration;

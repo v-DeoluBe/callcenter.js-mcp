@@ -4,6 +4,7 @@ export interface SIPConfig {
   serverIp: string;
   serverPort: number;
   localPort: number;
+  externalIp?: string;               // Public IP/hostname to advertise in SDP when behind NAT (required for most real internet VoIP/DID providers)
 }
 
 // Enhanced SIP configuration extending the basic SIPConfig
