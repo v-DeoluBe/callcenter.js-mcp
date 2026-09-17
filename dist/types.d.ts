@@ -81,6 +81,22 @@ export interface AIVoiceConfig {
     userName?: string;
     language?: string;
 }
+export interface EventTopic {
+    id: string;
+    name: string;
+    description: string;
+    keywords?: string[];
+    knowledge?: string;
+    mcpEndpoint?: string;
+}
+export interface InboundConfig {
+    enabled: boolean;
+    autoAnswer?: boolean;
+    greeting?: string;
+    noMatchMessage?: string;
+    confidenceThreshold?: number;
+    topics: EventTopic[];
+}
 export interface Config {
     sip: SIPConfig | SIPAdvancedConfig;
     ai?: AIVoiceConfig;
@@ -88,9 +104,10 @@ export interface Config {
     audio?: AudioConfig;
     logging?: any;
     call?: any;
+    inbound?: InboundConfig;
 }
 export interface CallEvent {
-    type: 'REGISTERED' | 'REGISTER_FAILED' | 'CALL_INITIATED' | 'CALL_ANSWERED' | 'CALL_ENDED' | 'ERROR' | 'CONNECTED' | 'DISCONNECTED' | 'SESSION_REFRESH' | 'TRANSPORT_FALLBACK' | 'AUTH_RETRY' | 'CONNECTION_FAILED';
+    type: 'REGISTERED' | 'REGISTER_FAILED' | 'CALL_INITIATED' | 'CALL_ANSWERED' | 'CALL_ENDED' | 'ERROR' | 'CONNECTED' | 'DISCONNECTED' | 'SESSION_REFRESH' | 'TRANSPORT_FALLBACK' | 'AUTH_RETRY' | 'CONNECTION_FAILED' | 'INCOMING_CALL';
     message?: any;
     data?: any;
     endedBy?: 'remote' | 'local';

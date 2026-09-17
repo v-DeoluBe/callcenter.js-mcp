@@ -22,6 +22,7 @@ export declare class OpenAIClient extends EventEmitter {
     private itemToResponseMap;
     private playbackCompleted;
     private cleanupTimers;
+    private manualResponseControl;
     private perfStats;
     constructor(config: AIVoiceConfig);
     private setupWebSocketHandlers;
@@ -33,6 +34,20 @@ export declare class OpenAIClient extends EventEmitter {
     sendAudio(audioData: Int16Array): void;
     private arrayBufferToBase64;
     sendText(text: string): void;
+    /**
+     * Enable/disable manual response control. Must be called before connect()
+     * (or before the next session.update) to take effect, since it changes the
+     * session's turn_detection.create_response setting.
+     */
+    setManualResponseControl(enabled: boolean): void;
+    /**
+     * Replace the instructions used for subsequent responses (createResponse()
+     * always reads the latest value). Used by inbound call routing to inject
+     * topic-specific context/answers once a caller's question has been
+     * classified, without needing a full session reconnect.
+     */
+    updateInstructions(instructions: string): void;
+    getInstructions(): string | undefined;
     createResponse(): void;
     onAudioReceived(callback: (audio: Int16Array, responseId?: string) => void): void;
     onEndCall(callback: () => void): void;

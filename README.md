@@ -394,7 +394,51 @@ Options:
   --help                        Display help information
 ```
 
-### 3. Programmatic API
+### 3. Inbound Calls: Answering Questions by Topic
+
+The agent can also **receive** calls instead of only placing them. When `inbound.enabled` is set in your config, the agent registers with your SIP provider, auto-answers incoming calls, greets the caller, and routes their spoken question to the best-matching configured "topic/event" - answering either from a static knowledge snippet or by calling an external MCP-style HTTP endpoint (`POST { question } -> { answer }`).
+
+```json
+{
+  "sip": { "...": "..." },
+  "ai": {
+    "openaiApiKey": "sk-your-openai-api-key-here",
+    "voice": "alloy"
+  },
+  "inbound": {
+    "enabled": true,
+    "autoAnswer": true,
+    "greeting": "Hi! Thanks for calling the community info line. What would you like to know about?",
+    "noMatchMessage": "I'm sorry, I don't have information on that topic yet.",
+    "confidenceThreshold": 0.5,
+    "topics": [
+      {
+        "id": "summer-fair",
+        "name": "Summer Fair 2026",
+        "description": "Dates, location, tickets and schedule for the annual summer fair",
+        "keywords": ["fair", "festival", "tickets"],
+        "knowledge": "The Summer Fair runs June 12-14 2026 at Riverside Park, 10am-8pm daily. Tickets are free for kids under 12, $10 for adults, available at the gate or online."
+      },
+      {
+        "id": "recycling",
+        "name": "Recycling Schedule",
+        "description": "Questions about curbside recycling pickup days and rules",
+        "mcpEndpoint": "https://internal.example.com/mcp/recycling"
+      }
+    ]
+  }
+}
+```
+
+Start listening for calls:
+
+```bash
+npm start listen --config config.json
+```
+
+Each topic can be answered either from the static `knowledge` text (grounded, no external dependency) or by delegating to `mcpEndpoint` (a lightweight HTTP JSON contract: the agent `POST`s `{ "question": "..." }` and expects `{ "answer": "..." }` back) - useful for wiring in a real MCP server or other backend that owns the authoritative answer. If no topic confidently matches the caller's question (see `confidenceThreshold`), the caller hears `noMatchMessage` instead.
+
+### 4. Programmatic API
 
 ```typescript
 import { makeCall, createAgent } from 'callcenter.js';

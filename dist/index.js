@@ -299,6 +299,8 @@ export { AudioBridge } from './audio-bridge.js';
 export { loadConfig, createSampleConfig, loadConfigFromEnv } from './config.js';
 // Call brief processing
 export { CallBriefProcessor, CallBriefError } from './call-brief-processor.js';
+// Inbound call routing (topic/MCP-based question answering)
+export { CallRouter } from './call-router.js';
 // Codec system
 export * from './codecs/index.js';
 // Types and interfaces

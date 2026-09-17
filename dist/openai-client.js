@@ -36,6 +36,12 @@ export class OpenAIClient extends EventEmitter {
     playbackCompleted = new Set();
     // Safety cleanup timers to prevent memory leaks
     cleanupTimers = new Map();
+    // When true, the server will not auto-generate responses on server_vad
+    // speech_stopped; the caller (VoiceAgent) must explicitly call
+    // createResponse(). Used for inbound call routing, where we need to
+    // classify the caller's question and inject topic-specific instructions
+    // before the AI responds.
+    manualResponseControl = false;
     perfStats = {
         eventProcessTimes: [],
         lastStatsLog: 0,
@@ -232,8 +238,11 @@ export class OpenAIClient extends EventEmitter {
                         break;
                     case "input_audio_buffer.speech_stopped":
                         logger.ai.debug("Speech stopped (user finished talking)");
-                        // Only start watchdog if we don't already have one running (from goodbye interruption)
-                        if (!this.watchdogTimer) {
+                        // In manual response control mode (inbound call routing), the
+                        // server won't auto-create a response, so there's nothing to
+                        // watchdog - VoiceAgent explicitly calls createResponse() once
+                        // routing/classification has completed.
+                        if (!this.watchdogTimer && !this.manualResponseControl) {
                             this.startResponseWatchdog();
                         }
                         break;
@@ -281,10 +290,12 @@ export class OpenAIClient extends EventEmitter {
                         // Log the accumulated transcript
                         if (this.currentUserTranscript) {
                             logger.transcript("user", this.currentUserTranscript, false);
+                            this.emit("userTranscriptCompleted", this.currentUserTranscript);
                             this.currentUserTranscript = ""; // Reset for next user speech
                         }
                         else if (event.transcript) {
                             logger.transcript("user", event.transcript, false);
+                            this.emit("userTranscriptCompleted", event.transcript);
                         }
                         break;
                     case "input_audio_buffer.transcription":
@@ -675,12 +686,20 @@ export class OpenAIClient extends EventEmitter {
         else if (this.config.language) {
             getLogger().ai.warn(`Invalid language code '${this.config.language}' - letting Whisper auto-detect`);
         }
+        // Voice activity detection: in manual response mode (used for inbound
+        // call routing) we still want server-side turn detection for accurate
+        // transcription timing, but we take control of *when* a response is
+        // generated so we can inject routed/topic-specific instructions first.
+        const turnDetection = { type: "server_vad" };
+        if (this.manualResponseControl) {
+            turnDetection.create_response = false;
+        }
         // Send session.update with all configuration including tools
         this.send("session.update", {
             session: {
                 instructions: this.config.instructions,
                 voice: this.config.voice || "marin",
-                turn_detection: { type: "server_vad" },
+                turn_detection: turnDetection,
                 input_audio_transcription: transcriptionConfig,
                 modalities: ["text", "audio"],
                 input_audio_format: "pcm16",
@@ -807,6 +826,27 @@ export class OpenAIClient extends EventEmitter {
         catch (error) {
             getLogger().ai.error("Error sending text to OpenAI:", error);
         }
+    }
+    /**
+     * Enable/disable manual response control. Must be called before connect()
+     * (or before the next session.update) to take effect, since it changes the
+     * session's turn_detection.create_response setting.
+     */
+    setManualResponseControl(enabled) {
+        this.manualResponseControl = enabled;
+    }
+    /**
+     * Replace the instructions used for subsequent responses (createResponse()
+     * always reads the latest value). Used by inbound call routing to inject
+     * topic-specific context/answers once a caller's question has been
+     * classified, without needing a full session reconnect.
+     */
+    updateInstructions(instructions) {
+        this.config.instructions = instructions;
+        getLogger().ai.debug("Updated AI instructions for subsequent responses", "AI");
+    }
+    getInstructions() {
+        return this.config.instructions;
     }
     createResponse() {
         if (!this.isConnected) {

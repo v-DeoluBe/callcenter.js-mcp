@@ -252,6 +252,84 @@ program
   });
 
 program
+  .command('listen')
+  .description('Listen for inbound calls and answer questions by routing to configured topics')
+  .option('-c, --config <path>', 'Configuration file path', 'config.json')
+  .option('-v, --verbose', 'Verbose mode - show all debug information')
+  .option('-q, --quiet', 'Quiet mode - show only transcripts, errors, and warnings')
+  .option('--log-level <level>', 'Set log level (quiet|error|warn|info|debug|verbose)', 'info')
+  .option('--no-colors', 'Disable colored output')
+  .option('--no-timestamp', 'Disable timestamps in logs')
+  .option('--record [filename]', 'Enable stereo call recording (optional filename)')
+  .action(async (options: any) => {
+    try {
+      let logLevel = LogLevel.INFO;
+      if (options.verbose) {
+        logLevel = LogLevel.VERBOSE;
+      } else if (options.quiet) {
+        logLevel = LogLevel.QUIET;
+      } else if (options.logLevel) {
+        logLevel = options.logLevel as LogLevel;
+      }
+
+      const logger = initializeLogger({
+        level: logLevel,
+        enableColors: !options.noColors,
+        enableTimestamp: !options.noTimestamp,
+        transcriptOnly: logLevel === LogLevel.QUIET
+      });
+
+      const config = loadConfig(options.config);
+
+      if (!config.inbound?.enabled) {
+        logger.error('Inbound call handling is not enabled. Set "inbound": { "enabled": true, "topics": [...] } in your config file.', 'CONFIG');
+        process.exit(1);
+      }
+
+      logger.info(`Starting inbound listener with ${config.inbound.topics?.length || 0} configured topic(s)...`, 'CONFIG');
+
+      const agent = new VoiceAgent(config, {
+        enableCallRecording: options.record !== undefined,
+        recordingFilename: options.record === true ? undefined : options.record
+      });
+
+      agent.on('sipEvent', (event) => {
+        logger.sip.debug(`${event.type}`);
+      });
+
+      agent.on('incomingCall', (data) => {
+        logger.sip.info(`Incoming call from ${data?.from || 'unknown'}`);
+      });
+
+      agent.on('callEnded', () => {
+        logger.info('Call ended, still listening for new calls...', 'CONFIG');
+      });
+
+      agent.on('error', (error) => {
+        logger.error(`Agent error: ${error.message}`);
+      });
+
+      await agent.listenForCalls();
+
+      process.on('SIGINT', async () => {
+        logger.info('\nReceived SIGINT, shutting down gracefully...', "CONFIG");
+        await agent.shutdown();
+        process.exit(0);
+      });
+
+      process.on('SIGTERM', async () => {
+        logger.info('\nReceived SIGTERM, shutting down gracefully...', "CONFIG");
+        await agent.shutdown();
+        process.exit(0);
+      });
+    } catch (error) {
+      const logger = initializeLogger({ level: LogLevel.ERROR, enableColors: true, enableTimestamp: false });
+      logger.error(error instanceof Error ? error.message : 'Unknown error');
+      process.exit(1);
+    }
+  });
+
+program
   .command('status')
   .description('Check agent and connection status')
   .option('-c, --config <path>', 'Configuration file path', 'config.json')

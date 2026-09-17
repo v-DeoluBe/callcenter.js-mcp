@@ -92,6 +92,7 @@ export { OpenAIClient } from './openai-client.js';
 export { AudioBridge } from './audio-bridge.js';
 export { loadConfig, createSampleConfig, loadConfigFromEnv } from './config.js';
 export { CallBriefProcessor, CallBriefError } from './call-brief-processor.js';
+export { CallRouter } from './call-router.js';
 export * from './codecs/index.js';
 export * from './types.js';
 export { LogLevel } from './logger.js';

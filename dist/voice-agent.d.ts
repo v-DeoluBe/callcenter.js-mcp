@@ -11,6 +11,9 @@ export declare class VoiceAgent extends EventEmitter {
     private perfMonitor;
     private enableCallRecording;
     private aiEndCallReason;
+    private inboundConfig?;
+    private callRouter?;
+    private isInboundCallInProgress;
     private audioBatch;
     private readonly BATCH_SIZE;
     private batchTimer;
@@ -23,6 +26,17 @@ export declare class VoiceAgent extends EventEmitter {
     private setupConnectionManager;
     private getLocalIpAddress;
     private setupAudioBridge;
+    /**
+     * Wire up caller-question routing for inbound calls: whenever the caller's
+     * speech has been transcribed, classify it against the configured topic
+     * registry and inject a grounded answer into the AI's instructions before
+     * generating a response.
+     */
+    private setupInboundRouting;
+    private handleInboundQuestion;
+    private buildGreetingInstructions;
+    private buildRoutedInstructions;
+    private buildNoMatchInstructions;
     private addAudioToBatch;
     private sendBatchedAudio;
     private clearAudioBatch;
@@ -31,6 +45,12 @@ export declare class VoiceAgent extends EventEmitter {
     private parseSdpAndSetupAudio;
     private handleCallEnded;
     initialize(): Promise<void>;
+    /**
+     * Register with the SIP provider (if not already connected) and start
+     * accepting inbound calls, routing caller questions to the configured
+     * topic registry. Requires `config.inbound.enabled` to be true.
+     */
+    listenForCalls(): Promise<void>;
     makeCall(callConfig: CallConfig): Promise<void>;
     endCall(): Promise<void>;
     getStatus(): any;

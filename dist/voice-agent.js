@@ -5,6 +5,7 @@ import { OpenAIClient } from "./openai-client.js";
 import { AudioBridge } from "./audio-bridge.js";
 import { PerformanceMonitor } from "./performance-monitor.js";
 import { ConnectionManager } from "./connection-manager.js";
+import { CallRouter } from "./call-router.js";
 import { getLogger } from "./logger.js";
 export class VoiceAgent extends EventEmitter {
     sipClient;
@@ -17,6 +18,10 @@ export class VoiceAgent extends EventEmitter {
     perfMonitor;
     enableCallRecording = true;
     aiEndCallReason = null;
+    // Inbound call routing ("MCP topic" answering) support
+    inboundConfig;
+    callRouter;
+    isInboundCallInProgress = false;
     // Audio batching to reduce OpenAI SDK overhead
     audioBatch = [];
     BATCH_SIZE = 2; // Batch only 2 packets (20ms) to reduce latency
@@ -39,6 +44,15 @@ export class VoiceAgent extends EventEmitter {
             this.connectionManager = new ConnectionManager(config.sip);
             this.setupConnectionManager();
         }
+        // Set up inbound call routing if configured
+        if (config.inbound?.enabled) {
+            this.inboundConfig = config.inbound;
+            this.callRouter = new CallRouter({
+                openaiApiKey: aiConfig.openaiApiKey,
+                topics: config.inbound.topics || [],
+                confidenceThreshold: config.inbound.confidenceThreshold,
+            });
+        }
         // Get the local IP for binding
         const localIp = this.getLocalIpAddress();
         this.audioBridge = new AudioBridge({
@@ -49,6 +63,7 @@ export class VoiceAgent extends EventEmitter {
             recordingFilename: options?.recordingFilename,
         });
         this.setupAudioBridge();
+        this.setupInboundRouting();
         // Initialize performance monitoring
         this.perfMonitor = new PerformanceMonitor();
         this.perfMonitor.on('eventLoopLag', (lag) => {
@@ -193,6 +208,79 @@ export class VoiceAgent extends EventEmitter {
             }
         });
     }
+    /**
+     * Wire up caller-question routing for inbound calls: whenever the caller's
+     * speech has been transcribed, classify it against the configured topic
+     * registry and inject a grounded answer into the AI's instructions before
+     * generating a response.
+     */
+    setupInboundRouting() {
+        if (!this.callRouter)
+            return;
+        this.openaiClient.on('userTranscriptCompleted', (transcript) => {
+            if (this.isCallActive && this.isInboundCallInProgress) {
+                this.handleInboundQuestion(transcript);
+            }
+        });
+    }
+    async handleInboundQuestion(transcript) {
+        if (!this.callRouter || !this.inboundConfig)
+            return;
+        const question = transcript.trim();
+        if (!question)
+            return;
+        try {
+            getLogger().ai.debug(`Routing inbound caller question: "${question}"`, 'AI');
+            const decision = await this.callRouter.classify(question);
+            let instructions;
+            if (decision.topic) {
+                const answer = await this.callRouter.answer(decision.topic, question);
+                const timestamp = getLogger().isQuietMode() ? `[${new Date().toTimeString().substring(0, 8)}] ` : '';
+                getLogger().callStatus.transcript(`${timestamp}🔀 Routed to topic "${decision.topic.name}" (confidence: ${decision.confidence.toFixed(2)})`);
+                instructions = this.buildRoutedInstructions(decision.topic, answer);
+            }
+            else {
+                instructions = this.buildNoMatchInstructions();
+            }
+            this.openaiClient.updateInstructions(instructions);
+        }
+        catch (error) {
+            getLogger().ai.error('Error routing inbound question:', error instanceof Error ? error.message : String(error));
+        }
+        finally {
+            if (this.isCallActive) {
+                this.openaiClient.createResponse();
+            }
+        }
+    }
+    buildGreetingInstructions() {
+        const topics = this.inboundConfig?.topics || [];
+        const topicList = topics.map((t) => `- ${t.name}: ${t.description}`).join('\n');
+        const greeting = this.inboundConfig?.greeting ||
+            "Hello! Thanks for calling. What would you like to know about?";
+        return (`You are a friendly phone assistant answering an inbound information line. ` +
+            `Start the call by greeting the caller with: "${greeting}" Then listen carefully to their question. ` +
+            (topicList
+                ? `You can help answer questions about the following topics/events:\n${topicList}\n`
+                : '') +
+            `Keep responses brief and conversational, since this is a live phone call. ` +
+            `Do not make up information you don't have.`);
+    }
+    buildRoutedInstructions(topic, answer) {
+        return (`You are a friendly phone assistant answering an inbound information line. ` +
+            `The caller just asked a question related to "${topic.name}". ` +
+            `Speak the following answer back to them naturally and conversationally (don't read it verbatim, rephrase it as natural speech):\n\n` +
+            `"${answer}"\n\n` +
+            `After answering, ask if there's anything else they'd like to know. Keep responses brief, as this is a live phone call.`);
+    }
+    buildNoMatchInstructions() {
+        const noMatchMessage = this.inboundConfig?.noMatchMessage ||
+            "I'm sorry, I don't have information on that topic.";
+        return (`You are a friendly phone assistant answering an inbound information line. ` +
+            `You don't have specific information to answer the caller's last question. ` +
+            `Politely tell them: "${noMatchMessage}" Then ask if there's anything else you can help with. ` +
+            `Keep responses brief, as this is a live phone call.`);
+    }
     addAudioToBatch(audioData) {
         this.audioBatch.push(audioData);
         // Send immediately if batch is full
@@ -253,6 +341,13 @@ export class VoiceAgent extends EventEmitter {
             case "REGISTERED":
                 getLogger().sip.debug("SIP client registered successfully");
                 break;
+            case "INCOMING_CALL": {
+                this.isInboundCallInProgress = true;
+                const timestamp = getLogger().isQuietMode() ? `[${new Date().toTimeString().substring(0, 8)}] ` : '';
+                getLogger().callStatus.transcript(`${timestamp}📞 INCOMING CALL from ${event.data?.from || 'unknown'}`);
+                this.emit("incomingCall", event.data);
+                break;
+            }
             case "CALL_ANSWERED":
                 this.handleCallAnswered(event);
                 break;
@@ -301,6 +396,16 @@ export class VoiceAgent extends EventEmitter {
                 }
             }, 30000);
             try {
+                // For inbound calls being routed to topic-specific knowledge, use a
+                // greeting-focused prompt and take manual control of response
+                // generation so we can inject a routed answer before the AI speaks.
+                if (this.callRouter && this.isInboundCallInProgress) {
+                    this.openaiClient.setManualResponseControl(true);
+                    this.openaiClient.updateInstructions(this.buildGreetingInstructions());
+                }
+                else {
+                    this.openaiClient.setManualResponseControl(false);
+                }
                 if (!this.openaiClient.isReady()) {
                     await this.openaiClient.connect();
                 }
@@ -344,6 +449,7 @@ export class VoiceAgent extends EventEmitter {
     async handleCallEnded(endedBy = 'local') {
         this.isCallActive = false;
         this.currentCallId = null;
+        this.isInboundCallInProgress = false;
         // Determine who really ended the call and why
         let endedByText;
         if (this.aiEndCallReason) {
@@ -396,6 +502,29 @@ export class VoiceAgent extends EventEmitter {
             getLogger().error("Failed to initialize voice agent:", error instanceof Error ? error.message : String(error));
             throw error;
         }
+    }
+    /**
+     * Register with the SIP provider (if not already connected) and start
+     * accepting inbound calls, routing caller questions to the configured
+     * topic registry. Requires `config.inbound.enabled` to be true.
+     */
+    async listenForCalls() {
+        if (!this.inboundConfig?.enabled || !this.callRouter) {
+            throw new Error("Inbound call handling is not enabled. Set `inbound.enabled = true` and provide `inbound.topics` in the configuration.");
+        }
+        // Start AudioBridge up-front so an RTP port is ready before the first
+        // INVITE arrives (outbound calls start it lazily inside makeCall()).
+        if (!this.audioBridge.isRunning()) {
+            await this.audioBridge.start();
+            getLogger().audio.debug(`AudioBridge started on port: ${this.audioBridge.getLocalPort()}`);
+            this.sipClient.setLocalRtpPort(this.audioBridge.getLocalPort());
+        }
+        const autoAnswer = this.inboundConfig.autoAnswer !== false;
+        this.sipClient.enableInboundCalls(autoAnswer);
+        if (!this.sipClient.isConnected()) {
+            await this.initialize();
+        }
+        getLogger().sip.info(`Listening for inbound calls (auto-answer: ${autoAnswer}, topics: ${this.inboundConfig.topics.length})`);
     }
     async makeCall(callConfig) {
         if (!this.sipClient.isConnected()) {
